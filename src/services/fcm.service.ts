@@ -1,4 +1,4 @@
-import { getFirebaseApp } from '../config/firebase';
+import { getFirebaseMessaging } from '../config/firebase';
 import { logger } from '../config/logger';
 
 export class FCMService {
@@ -13,8 +13,7 @@ export class FCMService {
 
   async sendToDevice(deviceToken: string, payload: any) {
     try {
-      const app = getFirebaseApp();
-      const messaging = app.messaging();
+      const messaging = getFirebaseMessaging();
 
       const message = {
         token: deviceToken,
@@ -46,8 +45,7 @@ export class FCMService {
 
   async sendToTopic(topic: string, payload: any) {
     try {
-      const app = getFirebaseApp();
-      const messaging = app.messaging();
+      const messaging = getFirebaseMessaging();
 
       const message = {
         topic,
@@ -79,8 +77,7 @@ export class FCMService {
 
   async sendToDevices(deviceTokens: string[], payload: any) {
     try {
-      const app = getFirebaseApp();
-      const messaging = app.messaging();
+      const messaging = getFirebaseMessaging();
 
       const messages = deviceTokens.map(token => ({
         token,
@@ -110,7 +107,6 @@ export class FCMService {
     }
   }
 
-  // Notification templates
   async sendDeviceOnlineNotification(deviceToken: string, deviceName: string) {
     return this.sendToDevice(deviceToken, {
       title: 'Device Online',
