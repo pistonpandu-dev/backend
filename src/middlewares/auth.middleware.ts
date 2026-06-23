@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/database';
 import { logger } from '../config/logger';
+import { getRedisClient } from '../config/redis';
 
 interface JwtPayload {
   id: string;
@@ -16,8 +17,11 @@ declare global {
       user: {
         id: string;
         role: string;
+        email?: string;
+        name?: string;
       };
       sessionId: string;
+      token: string;
     }
   }
 }
@@ -33,7 +37,10 @@ export const authMiddleware = async (
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         success: false,
-        message: 'No token provided',
+        error: {
+          code: 'NO_TOKEN',
+          message: 'No token provided',
+        },
       });
     }
 
@@ -42,6 +49,19 @@ export const authMiddleware = async (
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as JwtPayload;
 
+    // Check if token is blacklisted
+    const redis = getRedisClient();
+    const isBlacklisted = await redis.get(`blacklist:${token}`);
+    if (isBlacklisted) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'TOKEN_BLACKLISTED',
+          message: 'Token has been revoked',
+        },
+      });
+    }
+
     // Check if token exists in session
     const session = await prisma.adminSession.findFirst({
       where: {
@@ -49,56 +69,92 @@ export const authMiddleware = async (
         accessToken: token,
         expiresAt: { gt: new Date() },
       },
+      include: {
+        admin: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            isActive: true,
+            lockedUntil: true,
+          },
+        },
+      },
     });
 
     if (!session) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid or expired session',
+        error: {
+          code: 'INVALID_SESSION',
+          message: 'Invalid or expired session',
+        },
       });
     }
 
     // Check if admin exists and is active
-    const admin = await prisma.admin.findUnique({
-      where: { id: decoded.id },
-    });
-
+    const admin = session.admin;
     if (!admin || !admin.isActive) {
       return res.status(401).json({
         success: false,
-        message: 'Account disabled or not found',
+        error: {
+          code: 'ACCOUNT_DISABLED',
+          message: 'Account disabled or not found',
+        },
+      });
+    }
+
+    // Check if account is locked
+    if (admin.lockedUntil && admin.lockedUntil > new Date()) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCOUNT_LOCKED',
+          message: `Account locked until ${admin.lockedUntil.toISOString()}`,
+        },
       });
     }
 
     // Attach user to request
     req.user = {
-      id: decoded.id,
-      role: decoded.role,
+      id: admin.id,
+      role: admin.role,
+      email: admin.email,
+      name: admin.name,
     };
     req.sessionId = session.id;
+    req.token = token;
 
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
       return res.status(401).json({
         success: false,
-        message: 'Token expired',
-        code: 'TOKEN_EXPIRED',
+        error: {
+          code: 'TOKEN_EXPIRED',
+          message: 'Token expired',
+        },
       });
     }
 
     if (error instanceof jwt.JsonWebTokenError) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token',
-        code: 'INVALID_TOKEN',
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid token',
+        },
       });
     }
 
     logger.error('Auth middleware error:', error);
     return res.status(500).json({
       success: false,
-      message: 'Internal server error',
+      error: {
+        code: 'AUTH_ERROR',
+        message: 'Internal server error',
+      },
     });
   }
 };
