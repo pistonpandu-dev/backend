@@ -46,10 +46,8 @@ export const authMiddleware = async (
 
     const token = authHeader.split(' ')[1];
 
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as JwtPayload;
 
-    // Check if token is blacklisted
     const redis = getRedisClient();
     const isBlacklisted = await redis.get(`blacklist:${token}`);
     if (isBlacklisted) {
@@ -62,7 +60,6 @@ export const authMiddleware = async (
       });
     }
 
-    // Check if token exists in session
     const session = await prisma.adminSession.findFirst({
       where: {
         adminId: decoded.id,
@@ -93,7 +90,6 @@ export const authMiddleware = async (
       });
     }
 
-    // Check if admin exists and is active
     const admin = session.admin;
     if (!admin || !admin.isActive) {
       return res.status(401).json({
@@ -105,7 +101,6 @@ export const authMiddleware = async (
       });
     }
 
-    // Check if account is locked
     if (admin.lockedUntil && admin.lockedUntil > new Date()) {
       return res.status(403).json({
         success: false,
@@ -116,7 +111,6 @@ export const authMiddleware = async (
       });
     }
 
-    // Attach user to request
     req.user = {
       id: admin.id,
       role: admin.role,
