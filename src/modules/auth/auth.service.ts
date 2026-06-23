@@ -42,13 +42,11 @@ export class AuthService {
   async login(loginDto: LoginDto, ipAddress: string, deviceName: string) {
     const { email, password, rememberMe } = loginDto;
 
-    // Find admin
     const admin = await prisma.admin.findUnique({
       where: { email },
     });
 
     if (!admin) {
-      // Log failed attempt
       await this.auditService.logSecurityEvent({
         action: 'login_failed',
         module: 'auth',
@@ -60,7 +58,6 @@ export class AuthService {
       throw new Error('Invalid credentials');
     }
 
-    // Check if admin is active
     if (!admin.isActive) {
       await this.auditService.logSecurityEvent({
         adminId: admin.id,
@@ -74,21 +71,18 @@ export class AuthService {
       throw new Error('Account is disabled');
     }
 
-    // Check if account is locked
     if (admin.lockedUntil && admin.lockedUntil > new Date()) {
       throw new Error(`Account locked until ${admin.lockedUntil.toISOString()}`);
     }
 
-    // Verify password
     const isValidPassword = await comparePassword(password, admin.password);
     if (!isValidPassword) {
-      // Increment login attempts
       await prisma.admin.update({
         where: { id: admin.id },
         data: {
           loginAttempts: { increment: 1 },
           ...(admin.loginAttempts + 1 >= 5 && {
-            lockedUntil: new Date(Date.now() + 30 * 60 * 1000), // Lock for 30 minutes
+            lockedUntil: new Date(Date.now() + 30 * 60 * 1000),
           }),
         },
       });
@@ -106,7 +100,6 @@ export class AuthService {
       throw new Error('Invalid credentials');
     }
 
-    // Reset login attempts on successful login
     await prisma.admin.update({
       where: { id: admin.id },
       data: {
@@ -116,11 +109,9 @@ export class AuthService {
       },
     });
 
-    // Generate tokens
     const accessToken = generateAccessToken(admin.id, admin.role);
     const refreshToken = generateRefreshToken(admin.id);
 
-    // Save session
     const session = await prisma.adminSession.create({
       data: {
         adminId: admin.id,
@@ -132,7 +123,6 @@ export class AuthService {
       },
     });
 
-    // Store refresh token in Redis
     const redis = getRedisClient();
     await redis.setEx(
       `refresh_token:${admin.id}:${session.id}`,
@@ -140,7 +130,6 @@ export class AuthService {
       refreshToken
     );
 
-    // Log successful login
     await this.auditService.logSecurityEvent({
       adminId: admin.id,
       action: 'login_success',
@@ -170,7 +159,6 @@ export class AuthService {
   async register(registerDto: RegisterDto) {
     const { email, password, name, role } = registerDto;
 
-    // Check if admin already exists
     const existingAdmin = await prisma.admin.findUnique({
       where: { email },
     });
@@ -179,10 +167,8 @@ export class AuthService {
       throw new Error('Admin already exists with this email');
     }
 
-    // Hash password
     const hashedPassword = await hashPassword(password);
 
-    // Create admin
     const admin = await prisma.admin.create({
       data: {
         email,
@@ -190,11 +176,10 @@ export class AuthService {
         name,
         role: role || 'operator',
         lastPasswordChange: new Date(),
-        passwordExpiry: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days
+        passwordExpiry: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
       },
     });
 
-    // Send welcome email
     await sendEmail({
       to: email,
       subject: 'Welcome to Rayan Admin',
@@ -207,7 +192,6 @@ export class AuthService {
       `,
     });
 
-    // Log registration
     await this.auditService.logSecurityEvent({
       adminId: admin.id,
       action: 'admin_registered',
@@ -228,13 +212,11 @@ export class AuthService {
   async refreshToken(refreshTokenDto: RefreshTokenDto) {
     const { refreshToken } = refreshTokenDto;
 
-    // Verify refresh token
     const decoded = verifyRefreshToken(refreshToken);
     if (!decoded) {
       throw new Error('Invalid refresh token');
     }
 
-    // Find session
     const session = await prisma.adminSession.findFirst({
       where: {
         refreshToken,
@@ -255,23 +237,19 @@ export class AuthService {
       throw new Error('Invalid session');
     }
 
-    // Check if admin is active
     if (!session.admin.isActive) {
       throw new Error('Account is disabled');
     }
 
-    // Check if token is blacklisted
     const redis = getRedisClient();
     const isBlacklisted = await redis.get(`blacklist:${refreshToken}`);
     if (isBlacklisted) {
       throw new Error('Token has been revoked');
     }
 
-    // Generate new tokens
     const newAccessToken = generateAccessToken(session.adminId, session.admin.role);
     const newRefreshToken = generateRefreshToken(session.adminId);
 
-    // Update session
     await prisma.adminSession.update({
       where: { id: session.id },
       data: {
@@ -281,7 +259,6 @@ export class AuthService {
       },
     });
 
-    // Update Redis
     await redis.del(`refresh_token:${session.adminId}:${session.id}`);
     await redis.setEx(
       `refresh_token:${session.adminId}:${session.id}`,
@@ -289,7 +266,6 @@ export class AuthService {
       newRefreshToken
     );
 
-    // Log refresh
     await this.auditService.logSecurityEvent({
       adminId: session.adminId,
       action: 'token_refreshed',
@@ -305,5 +281,239 @@ export class AuthService {
     };
   }
 
-  // ... (continue with other methods)
+  async logout(adminId: string, sessionId: string, token: string) {
+    const redis = getRedisClient();
+    await redis.setEx(`blacklist:${token}`, 900, 'true');
+    await redis.del(`refresh_token:${adminId}:${sessionId}`);
+
+    await prisma.adminSession.delete({
+      where: { id: sessionId },
+    });
+
+    await this.auditService.logSecurityEvent({
+      adminId,
+      action: 'logout',
+      module: 'auth',
+      level: 'info',
+      description: 'User logged out',
+      metadata: { sessionId },
+    });
+  }
+
+  async logoutAll(adminId: string, currentSessionId: string) {
+    const sessions = await prisma.adminSession.findMany({
+      where: {
+        adminId,
+        id: { not: currentSessionId },
+      },
+    });
+
+    const redis = getRedisClient();
+    for (const session of sessions) {
+      await redis.del(`refresh_token:${adminId}:${session.id}`);
+      await redis.setEx(`blacklist:${session.accessToken}`, 900, 'true');
+    }
+
+    await prisma.adminSession.deleteMany({
+      where: {
+        adminId,
+        id: { not: currentSessionId },
+      },
+    });
+
+    await this.auditService.logSecurityEvent({
+      adminId,
+      action: 'logout_all',
+      module: 'auth',
+      level: 'info',
+      description: 'Logged out from all devices',
+      metadata: { currentSessionId },
+    });
+  }
+
+  async changePassword(adminId: string, changePasswordDto: ChangePasswordDto) {
+    const { currentPassword, newPassword } = changePasswordDto;
+
+    const admin = await prisma.admin.findUnique({
+      where: { id: adminId },
+    });
+
+    if (!admin) {
+      throw new Error('Admin not found');
+    }
+
+    const isValidPassword = await comparePassword(currentPassword, admin.password);
+    if (!isValidPassword) {
+      throw new Error('Current password is incorrect');
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+
+    await prisma.admin.update({
+      where: { id: adminId },
+      data: {
+        password: hashedPassword,
+        lastPasswordChange: new Date(),
+        passwordExpiry: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await this.auditService.logSecurityEvent({
+      adminId,
+      action: 'change_password',
+      module: 'auth',
+      level: 'info',
+      description: 'Password changed successfully',
+    });
+  }
+
+  async forgotPassword(forgotPasswordDto: ForgotPasswordDto) {
+    const { email } = forgotPasswordDto;
+
+    const admin = await prisma.admin.findUnique({
+      where: { email },
+    });
+
+    if (!admin) {
+      throw new Error('Admin not found');
+    }
+
+    const resetToken = generateToken(32);
+    const resetTokenExpiry = new Date(Date.now() + 3600000);
+
+    const redis = getRedisClient();
+    await redis.setEx(
+      `reset_token:${email}`,
+      3600,
+      JSON.stringify({ token: resetToken, expiry: resetTokenExpiry.toISOString() })
+    );
+
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}&email=${email}`;
+
+    await sendEmail({
+      to: email,
+      subject: 'Reset Your Password',
+      html: `
+        <h1>Reset Password</h1>
+        <p>Click the link below to reset your password:</p>
+        <a href="${resetUrl}">${resetUrl}</a>
+        <p>This link will expire in 1 hour.</p>
+      `,
+    });
+
+    await this.auditService.logSecurityEvent({
+      adminId: admin.id,
+      action: 'forgot_password',
+      module: 'auth',
+      level: 'info',
+      description: 'Password reset requested',
+      metadata: { email },
+    });
+  }
+
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    const { email, token, newPassword } = resetPasswordDto;
+
+    const redis = getRedisClient();
+    const storedData = await redis.get(`reset_token:${email}`);
+    
+    if (!storedData) {
+      throw new Error('Invalid or expired reset token');
+    }
+
+    const { token: storedToken, expiry } = JSON.parse(storedData);
+    
+    if (storedToken !== token || new Date(expiry) < new Date()) {
+      throw new Error('Invalid or expired reset token');
+    }
+
+    const admin = await prisma.admin.findUnique({
+      where: { email },
+    });
+
+    if (!admin) {
+      throw new Error('Admin not found');
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+
+    await prisma.admin.update({
+      where: { email },
+      data: {
+        password: hashedPassword,
+        lastPasswordChange: new Date(),
+        passwordExpiry: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await redis.del(`reset_token:${email}`);
+
+    await this.auditService.logSecurityEvent({
+      adminId: admin.id,
+      action: 'reset_password',
+      module: 'auth',
+      level: 'info',
+      description: 'Password reset successfully',
+      metadata: { email },
+    });
+  }
+
+  async verifyEmail(verifyEmailDto: VerifyEmailDto) {
+    const { email, token } = verifyEmailDto;
+
+    const redis = getRedisClient();
+    const storedToken = await redis.get(`verify_email:${email}`);
+
+    if (!storedToken || storedToken !== token) {
+      throw new Error('Invalid or expired verification token');
+    }
+
+    await prisma.admin.update({
+      where: { email },
+      data: {
+        isActive: true,
+      },
+    });
+
+    await redis.del(`verify_email:${email}`);
+  }
+
+  async getSessions(adminId: string) {
+    const sessions = await prisma.adminSession.findMany({
+      where: { adminId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return sessions;
+  }
+
+  async revokeSession(adminId: string, sessionId: string) {
+    const session = await prisma.adminSession.findFirst({
+      where: {
+        id: sessionId,
+        adminId,
+      },
+    });
+
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    const redis = getRedisClient();
+    await redis.del(`refresh_token:${adminId}:${sessionId}`);
+    await redis.setEx(`blacklist:${session.accessToken}`, 900, 'true');
+
+    await prisma.adminSession.delete({
+      where: { id: sessionId },
+    });
+
+    await this.auditService.logSecurityEvent({
+      adminId,
+      action: 'revoke_session',
+      module: 'auth',
+      level: 'info',
+      description: 'Session revoked',
+      metadata: { sessionId },
+    });
+  }
 }
