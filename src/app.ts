@@ -1,70 +1,61 @@
-import 'dotenv/config';
-import express, { Express } from 'express';
+import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import { createServer } from 'http';
+import { createServer, Server } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 
 // Config
 import { logger } from './config/logger';
-import { connectRedis } from './config/redis';
+import { connectRedis, getRedisClient } from './config/redis';
 import { initFirebase } from './config/firebase';
+import { setupSocketIO } from './socket';
 
 // Middlewares
 import { errorHandler } from './middlewares/error.middleware';
 import { rateLimiter } from './middlewares/rate-limit.middleware';
 import { authMiddleware } from './middlewares/auth.middleware';
+import { securityMiddleware } from './middlewares/security.middleware';
+import { AntiFakeDataMiddleware } from './middlewares/anti-fake-data.middleware';
 
 // Routes
-import authRoutes from './modules/auth/auth.routes';
-import deviceRoutes from './modules/devices/device.routes';
-import dashboardRoutes from './modules/dashboard/dashboard.routes';
-import monitoringRoutes from './modules/monitoring/monitoring.routes';
-import locationRoutes from './modules/locations/location.routes';
-import geofenceRoutes from './modules/geofence/geofence.routes';
-import applicationRoutes from './modules/applications/application.routes';
-import sessionRoutes from './modules/remote-session/session.routes';
-import screenRoutes from './modules/screens/screen.routes';
-import fileRoutes from './modules/files/file.routes';
-import notificationRoutes from './modules/notifications/notification.routes';
-import securityRoutes from './modules/security/security.routes';
-import logRoutes from './modules/logs/log.routes';
-
-// Socket
-import { setupSocketHandlers } from './socket';
+import { apiRoutes } from './routes/api.routes';
+import { healthRoutes } from './routes/health.routes';
+import { webhookRoutes } from './routes/webhook.routes';
 
 // Services
-import { SocketService } from './services/socket.service';
+import { initializeJobs } from './jobs';
 
-class App {
-  public app: Express;
-  public httpServer: any;
-  public io: SocketServer;
-  public prisma: PrismaClient;
+export class App {
+  private app: Express;
+  private server: Server;
+  private io: SocketServer;
+  private prisma: PrismaClient;
+  private isShuttingDown: boolean = false;
 
   constructor() {
     this.app = express();
-    this.httpServer = createServer(this.app);
-    this.io = new SocketServer(this.httpServer, {
+    this.server = createServer(this.app);
+    this.prisma = new PrismaClient();
+    this.io = new SocketServer(this.server, {
       cors: {
-        origin: process.env.CORS_ORIGIN || '*',
-        methods: ['GET', 'POST'],
+        origin: process.env.CORS_ORIGIN?.split(',') || '*',
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
         credentials: true,
       },
       transports: ['websocket', 'polling'],
+      pingTimeout: 60000,
+      pingInterval: 25000,
     });
-    this.prisma = new PrismaClient();
 
-    this.initializeMiddlewares();
-    this.initializeRoutes();
-    this.initializeSocketIO();
-    this.initializeServices();
-    this.initializeErrorHandling();
+    this.setupMiddlewares();
+    this.setupRoutes();
+    this.setupSocketIO();
+    this.setupErrorHandling();
   }
 
-  private initializeMiddlewares(): void {
+  private setupMiddlewares(): void {
     // Security
     if (process.env.NODE_ENV === 'production') {
       this.app.use(helmet({
@@ -73,9 +64,11 @@ class App {
           includeSubDomains: true,
           preload: true,
         },
-        frameguard: {
-          action: 'deny',
-        },
+        frameguard: { action: 'deny' },
+        xssFilter: true,
+        noSniff: true,
+        hidePoweredBy: true,
+        referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
       }));
     }
 
@@ -84,11 +77,21 @@ class App {
       origin: process.env.CORS_ORIGIN?.split(',') || '*',
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Timestamp', 'X-Request-Signature'],
+      exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining'],
     }));
 
     // Compression
-    this.app.use(compression());
+    this.app.use(compression({
+      level: 6,
+      threshold: 1024,
+      filter: (req, res) => {
+        if (req.headers['x-no-compression']) {
+          return false;
+        }
+        return compression.filter(req, res);
+      },
+    }));
 
     // Body parsing
     this.app.use(express.json({ limit: '50mb' }));
@@ -97,106 +100,174 @@ class App {
     // Rate limiting
     this.app.use(rateLimiter);
 
+    // Security middleware
+    this.app.use(securityMiddleware);
+
+    // Anti-fake data middleware
+    const antiFakeMiddleware = AntiFakeDataMiddleware.getInstance();
+    this.app.use(antiFakeMiddleware.validateRequestData);
+
     // Request logging
-    this.app.use((req, res, next) => {
-      logger.info(`${req.method} ${req.path}`, {
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      const start = Date.now();
+      res.on('finish', () => {
+        const duration = Date.now() - start;
+        logger.info(`${req.method} ${req.path}`, {
+          status: res.statusCode,
+          duration: `${duration}ms`,
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+          contentLength: res.get('content-length'),
+        });
       });
       next();
     });
   }
 
-  private initializeRoutes(): void {
+  private setupRoutes(): void {
     // Health check
-    this.app.get('/health', (req, res) => {
-      res.status(200).json({
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-      });
-    });
+    this.app.use('/health', healthRoutes);
+
+    // Webhook routes (no auth)
+    this.app.use('/webhooks', webhookRoutes);
 
     // API routes
-    this.app.use('/api/auth', authRoutes);
-    this.app.use('/api/dashboard', authMiddleware, dashboardRoutes);
-    this.app.use('/api/devices', authMiddleware, deviceRoutes);
-    this.app.use('/api/monitoring', authMiddleware, monitoringRoutes);
-    this.app.use('/api/location', authMiddleware, locationRoutes);
-    this.app.use('/api/geofence', authMiddleware, geofenceRoutes);
-    this.app.use('/api/apps', authMiddleware, applicationRoutes);
-    this.app.use('/api/session', authMiddleware, sessionRoutes);
-    this.app.use('/api/screen', authMiddleware, screenRoutes);
-    this.app.use('/api/files', authMiddleware, fileRoutes);
-    this.app.use('/api/notifications', authMiddleware, notificationRoutes);
-    this.app.use('/api/security', authMiddleware, securityRoutes);
-    this.app.use('/api/logs', authMiddleware, logRoutes);
+    this.app.use('/api', apiRoutes);
+
+    // Static files
+    this.app.use('/uploads', express.static(process.env.UPLOAD_PATH || 'uploads'));
 
     // 404 handler
-    this.app.use((req, res) => {
+    this.app.use((req: Request, res: Response) => {
       res.status(404).json({
         success: false,
-        message: 'Route not found',
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Route not found',
+          path: req.path,
+        },
       });
     });
   }
 
-  private initializeSocketIO(): void {
-    setupSocketHandlers(this.io);
+  private setupSocketIO(): void {
+    setupSocketIO(this.io);
   }
 
-  private initializeServices(): void {
-    // Initialize Socket Service
-    SocketService.getInstance(this.io);
-
-    // Initialize Firebase
-    initFirebase();
-
-    // Connect Redis
-    connectRedis();
-  }
-
-  private initializeErrorHandling(): void {
+  private setupErrorHandling(): void {
     this.app.use(errorHandler);
   }
 
-  public async start(): Promise<void> {
+  async initialize(): Promise<void> {
     try {
       // Connect to database
       await this.prisma.$connect();
       logger.info('✅ Database connected successfully');
 
-      // Start server
-      const PORT = process.env.PORT || 3000;
-      this.httpServer.listen(PORT, () => {
-        logger.info(`🚀 Server running on port ${PORT}`);
-        logger.info(`📍 Environment: ${process.env.NODE_ENV}`);
-        logger.info(`🔗 API URL: ${process.env.BASE_URL || `http://localhost:${PORT}`}`);
-      });
+      // Connect to Redis
+      await connectRedis();
+      logger.info('✅ Redis connected successfully');
+
+      // Initialize Firebase
+      initFirebase();
+      logger.info('✅ Firebase initialized successfully');
+
+      // Initialize background jobs
+      await initializeJobs();
+      logger.info('✅ Background jobs initialized successfully');
+
+      // Set up cleanup intervals
+      this.setupCleanupIntervals();
+
+      logger.info('🚀 Application initialized successfully');
     } catch (error) {
-      logger.error('❌ Failed to start server:', error);
-      process.exit(1);
+      logger.error('❌ Failed to initialize application:', error);
+      throw error;
     }
   }
 
-  public async shutdown(): Promise<void> {
+  private setupCleanupIntervals(): void {
+    // Cleanup expired sessions every hour
+    setInterval(async () => {
+      try {
+        const result = await this.prisma.adminSession.deleteMany({
+          where: {
+            expiresAt: { lt: new Date() },
+          },
+        });
+        if (result.count > 0) {
+          logger.info(`Cleaned up ${result.count} expired sessions`);
+        }
+      } catch (error) {
+        logger.error('Failed to cleanup expired sessions:', error);
+      }
+    }, 60 * 60 * 1000);
+
+    // Cleanup old logs every day
+    setInterval(async () => {
+      try {
+        const retentionDays = parseInt(process.env.LOG_RETENTION_DAYS || '30');
+        const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+        
+        const result = await this.prisma.auditLog.deleteMany({
+          where: {
+            createdAt: { lt: cutoffDate },
+          },
+        });
+        if (result.count > 0) {
+          logger.info(`Cleaned up ${result.count} old audit logs`);
+        }
+      } catch (error) {
+        logger.error('Failed to cleanup old logs:', error);
+      }
+    }, 24 * 60 * 60 * 1000);
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.isShuttingDown) return;
+    this.isShuttingDown = true;
+
+    logger.info('🛑 Shutting down gracefully...');
+
     try {
+      // Close HTTP server
+      await new Promise((resolve) => {
+        this.server.close(resolve);
+      });
+      logger.info('✅ HTTP server closed');
+
+      // Close Socket.IO
+      await this.io.close();
+      logger.info('✅ Socket.IO closed');
+
+      // Disconnect database
       await this.prisma.$disconnect();
-      await this.httpServer.close();
-      logger.info('🛑 Server shut down gracefully');
+      logger.info('✅ Database disconnected');
+
+      // Disconnect Redis
+      const redis = getRedisClient();
+      await redis.quit();
+      logger.info('✅ Redis disconnected');
+
+      logger.info('✅ Graceful shutdown completed');
     } catch (error) {
       logger.error('❌ Error during shutdown:', error);
-      process.exit(1);
     }
   }
-}
 
-// Initialize app
-const app = new App();
-app.start();
+  getServer(): Server {
+    return this.server;
+  }
 
-// Handle shutdown gracefully
-process.on('SIGTERM', () => app.shutdown());
-process.on('SIGINT', () => app.shutdown());
+  getApp(): Express {
+    return this.app;
+  }
 
-export default app;
+  getIO(): SocketServer {
+    return this.io;
+  }
+
+  getPrisma(): PrismaClient {
+    return this.prisma;
+  }
+          }
