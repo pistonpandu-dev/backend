@@ -6,7 +6,8 @@ import {
   refreshTokenSchema,
   changePasswordSchema,
   forgotPasswordSchema,
-  resetPasswordSchema 
+  resetPasswordSchema,
+  verifyEmailSchema,
 } from './auth.validator';
 import { logger } from '../../config/logger';
 
@@ -34,7 +35,32 @@ export class AuthController {
       logger.error('Login error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Login failed',
+        error: {
+          code: 'LOGIN_FAILED',
+          message: error instanceof Error ? error.message : 'Login failed',
+        },
+      });
+    }
+  };
+
+  register = async (req: Request, res: Response) => {
+    try {
+      const data = registerSchema.parse(req.body);
+      const result = await this.authService.register(data);
+
+      res.status(201).json({
+        success: true,
+        data: result,
+        message: 'Registration successful',
+      });
+    } catch (error) {
+      logger.error('Registration error:', error);
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'REGISTRATION_FAILED',
+          message: error instanceof Error ? error.message : 'Registration failed',
+        },
       });
     }
   };
@@ -53,7 +79,10 @@ export class AuthController {
       logger.error('Refresh token error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to refresh token',
+        error: {
+          code: 'REFRESH_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to refresh token',
+        },
       });
     }
   };
@@ -62,12 +91,9 @@ export class AuthController {
     try {
       const adminId = req.user.id;
       const sessionId = req.sessionId;
+      const token = req.token;
 
-      if (!sessionId) {
-        throw new Error('Session ID required');
-      }
-
-      await this.authService.logout(adminId, sessionId);
+      await this.authService.logout(adminId, sessionId, token);
 
       res.json({
         success: true,
@@ -77,7 +103,10 @@ export class AuthController {
       logger.error('Logout error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to logout',
+        error: {
+          code: 'LOGOUT_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to logout',
+        },
       });
     }
   };
@@ -86,10 +115,6 @@ export class AuthController {
     try {
       const adminId = req.user.id;
       const sessionId = req.sessionId;
-
-      if (!sessionId) {
-        throw new Error('Session ID required');
-      }
 
       await this.authService.logoutAll(adminId, sessionId);
 
@@ -101,7 +126,10 @@ export class AuthController {
       logger.error('Logout all error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to logout from all devices',
+        error: {
+          code: 'LOGOUT_ALL_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to logout from all devices',
+        },
       });
     }
   };
@@ -121,7 +149,10 @@ export class AuthController {
       logger.error('Change password error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to change password',
+        error: {
+          code: 'CHANGE_PASSWORD_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to change password',
+        },
       });
     }
   };
@@ -139,7 +170,10 @@ export class AuthController {
       logger.error('Forgot password error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to process forgot password',
+        error: {
+          code: 'FORGOT_PASSWORD_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to process forgot password',
+        },
       });
     }
   };
@@ -157,7 +191,31 @@ export class AuthController {
       logger.error('Reset password error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to reset password',
+        error: {
+          code: 'RESET_PASSWORD_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to reset password',
+        },
+      });
+    }
+  };
+
+  verifyEmail = async (req: Request, res: Response) => {
+    try {
+      const data = verifyEmailSchema.parse(req.body);
+      await this.authService.verifyEmail(data);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully',
+      });
+    } catch (error) {
+      logger.error('Verify email error:', error);
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'VERIFY_EMAIL_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to verify email',
+        },
       });
     }
   };
@@ -175,7 +233,10 @@ export class AuthController {
       logger.error('Get sessions error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to get sessions',
+        error: {
+          code: 'GET_SESSIONS_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to get sessions',
+        },
       });
     }
   };
@@ -195,8 +256,11 @@ export class AuthController {
       logger.error('Revoke session error:', error);
       res.status(400).json({
         success: false,
-        message: error instanceof Error ? error.message : 'Failed to revoke session',
+        error: {
+          code: 'REVOKE_SESSION_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to revoke session',
+        },
       });
     }
   };
-                   }
+}
