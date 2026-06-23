@@ -2,17 +2,16 @@ import { prisma } from '../../config/database';
 import { getRedisClient } from '../../config/redis';
 import { logger } from '../../config/logger';
 
-export class SecurityAuditService {
-  private static instance: SecurityAuditService;
+export class AuditService {
+  private static instance: AuditService;
 
-  static getInstance(): SecurityAuditService {
-    if (!SecurityAuditService.instance) {
-      SecurityAuditService.instance = new SecurityAuditService();
+  static getInstance(): AuditService {
+    if (!AuditService.instance) {
+      AuditService.instance = new AuditService();
     }
-    return SecurityAuditService.instance;
+    return AuditService.instance;
   }
 
-  // Log security event
   async logSecurityEvent(data: {
     adminId?: string;
     deviceId?: string;
@@ -60,7 +59,7 @@ export class SecurityAuditService {
         ...data,
         timestamp: new Date().toISOString(),
       }));
-      await redis.lTrim(key, 0, 999); // Keep last 1000 events
+      await redis.lTrim(key, 0, 999);
 
       // Log to file
       logger.info('Security event logged', {
@@ -75,182 +74,58 @@ export class SecurityAuditService {
     }
   }
 
-  // Get recent security events
-  async getSecurityEvents(filters: {
-    startDate?: Date;
-    endDate?: Date;
-    level?: string[];
-    module?: string;
-    limit?: number;
-    offset?: number;
-  }): Promise<any> {
-    const { startDate, endDate, level, module, limit = 100, offset = 0 } = filters;
+  async getAuditLogs(filters: any) {
+    const { page = 1, limit = 50, startDate, endDate, module, action, adminId } = filters;
 
     const where: any = {};
 
     if (startDate) {
-      where.createdAt = { gte: startDate };
+      where.createdAt = { gte: new Date(startDate) };
     }
 
     if (endDate) {
-      where.createdAt = { ...where.createdAt, lte: endDate };
-    }
-
-    if (level && level.length > 0) {
-      where.level = { in: level };
+      where.createdAt = { ...where.createdAt, lte: new Date(endDate) };
     }
 
     if (module) {
       where.module = module;
     }
 
-    const events = await prisma.auditLog.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip: offset,
-      take: limit,
-      include: {
-        admin: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
+    if (action) {
+      where.action = action;
+    }
+
+    if (adminId) {
+      where.adminId = adminId;
+    }
+
+    const [data, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          admin: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
           },
         },
-      },
-    });
-
-    const total = await prisma.auditLog.count({ where });
-
-    return {
-      data: events,
-      pagination: {
-        total,
-        limit,
-        offset,
-        hasMore: offset + limit < total,
-      },
-    };
-  }
-
-  // Get security statistics
-  async getSecurityStats(days: number = 7): Promise<any> {
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-
-    const stats = await prisma.$transaction([
-      // Total security events
-      prisma.auditLog.count({
-        where: {
-          createdAt: { gte: startDate },
-        },
       }),
-      
-      // Events by level
-      prisma.auditLog.groupBy({
-        by: ['module'],
-        where: {
-          createdAt: { gte: startDate },
-        },
-        _count: true,
-      }),
-      
-      // Critical alerts
-      prisma.securityAlert.count({
-        where: {
-          level: { in: ['high', 'critical'] },
-          createdAt: { gte: startDate },
-          resolved: false,
-        },
-      }),
-      
-      // Top actions
-      prisma.auditLog.groupBy({
-        by: ['action'],
-        where: {
-          createdAt: { gte: startDate },
-        },
-        _count: true,
-        orderBy: {
-          _count: {
-            action: 'desc',
-          },
-        },
-        take: 10,
-      }),
+      prisma.auditLog.count({ where }),
     ]);
 
     return {
-      totalEvents: stats[0],
-      eventsByModule: stats[1],
-      criticalAlerts: stats[2],
-      topActions: stats[3],
+      data,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
     };
-  }
-
-  // Check for suspicious patterns
-  async checkSuspiciousActivity(adminId: string, ipAddress: string): Promise<{
-    suspicious: boolean;
-    reasons: string[];
-  }> {
-    const reasons: string[] = [];
-    let suspicious = false;
-    const redis = getRedisClient();
-
-    // Check login attempts
-    const loginKey = `login_attempts:${adminId}`;
-    const loginAttempts = parseInt(await redis.get(loginKey) || '0');
-    
-    if (loginAttempts > 10) {
-      reasons.push('Multiple login attempts detected');
-      suspicious = true;
-    }
-
-    // Check failed attempts
-    const failedKey = `failed_attempts:${ipAddress}`;
-    const failedAttempts = parseInt(await redis.get(failedKey) || '0');
-    
-    if (failedAttempts > 5) {
-      reasons.push('Multiple failed attempts from same IP');
-      suspicious = true;
-    }
-
-    // Check time between actions
-    const lastActionKey = `last_action:${adminId}`;
-    const lastAction = await redis.get(lastActionKey);
-    
-    if (lastAction) {
-      const timeSinceLastAction = Date.now() - parseInt(lastAction);
-      if (timeSinceLastAction < 1000) { // Less than 1 second between actions
-        reasons.push('Unusually fast actions detected');
-        suspicious = true;
-      }
-    }
-
-    // Check action frequency
-    const actionKey = `action_frequency:${adminId}`;
-    const actionCount = parseInt(await redis.get(actionKey) || '0');
-    const newCount = actionCount + 1;
-    
-    await redis.setEx(actionKey, 60, newCount.toString());
-    
-    if (newCount > 60) { // More than 60 actions per minute
-      reasons.push('Excessive action frequency');
-      suspicious = true;
-    }
-
-    if (suspicious) {
-      // Log suspicious activity
-      await this.logSecurityEvent({
-        adminId,
-        action: 'suspicious_activity_detected',
-        module: 'security',
-        level: 'high',
-        description: reasons.join(', '),
-        ipAddress,
-        metadata: { reasons },
-      });
-    }
-
-    return { suspicious, reasons };
   }
 }
