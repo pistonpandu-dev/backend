@@ -111,8 +111,6 @@ model Device {
   status              DeviceStatus @default(offline)
   lastSeen            DateTime?    @default(now())
   fcmToken            String?
-  
-  // Security fields
   trustScore          Int?         @default(100)
   verificationLevel   String?      @default("basic")
   securityFlags       Json?
@@ -121,7 +119,6 @@ model Device {
   isCompromised       Boolean      @default(false)
   compromisedAt       DateTime?
   deletedAt           DateTime?
-  
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
 
