@@ -1,0 +1,30 @@
+export const REGEX = {
+  EMAIL: /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
+  PASSWORD: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
+  PHONE: /^\+?[1-9]\d{1,14}$/,
+  UUID: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  URL: /^https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&\/=]*)$/,
+  IP: /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/,
+  DEVICE_ID: /^[a-zA-Z0-9_-]{8,32}$/,
+  SERIAL_NUMBER: /^[A-Z0-9]{8,16}$/,
+  ANDROID_VERSION: /^[0-9]+(\.[0-9]+){0,2}$/,
+  LATITUDE: /^-?([1-8]?[0-9]\.?\d{0,6}|90\.?0{0,6})$/,
+  LONGITUDE: /^-?((1[0-7]?[0-9]\.?\d{0,6})|(180\.?0{0,6}))$/,
+  COLOR_HEX: /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/,
+  PIN_CODE: /^[0-9]{6}$/,
+};
+
+export const REGEX_MESSAGES = {
+  EMAIL: 'Please enter a valid email address',
+  PASSWORD: 'Password must be at least 8 characters with uppercase, lowercase, number and special character',
+  PHONE: 'Please enter a valid phone number',
+  UUID: 'Invalid UUID format',
+  URL: 'Invalid URL format',
+  IP: 'Invalid IP address format',
+  DEVICE_ID: 'Device ID must be 8-32 alphanumeric characters',
+  SERIAL_NUMBER: 'Serial number must be 8-16 alphanumeric characters',
+  LATITUDE: 'Invalid latitude value (-90 to 90)',
+  LONGITUDE: 'Invalid longitude value (-180 to 180)',
+  COLOR_HEX: 'Invalid hex color code',
+  PIN_CODE: 'PIN must be 6 digits',
+};
