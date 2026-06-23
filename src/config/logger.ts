@@ -4,7 +4,6 @@ import fs from 'fs';
 
 const logDir = 'logs';
 
-// Create logs directory if it doesn't exist
 if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir);
 }
@@ -33,7 +32,7 @@ const logger = winston.createLogger({
     new winston.transports.File({
       filename: path.join(logDir, 'error.log'),
       level: 'error',
-      maxsize: 10485760, // 10MB
+      maxsize: 10485760,
       maxFiles: 5,
       tailable: true,
     }),
@@ -71,7 +70,6 @@ const logger = winston.createLogger({
   ],
 });
 
-// If not in production, also log to console
 if (process.env.NODE_ENV !== 'production') {
   logger.add(
     new winston.transports.Console({
@@ -88,7 +86,6 @@ if (process.env.NODE_ENV !== 'production') {
   );
 }
 
-// Create stream for Morgan
 export const stream = {
   write: (message: string) => {
     logger.http(message.trim());
