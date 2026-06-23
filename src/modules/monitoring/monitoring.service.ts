@@ -3,6 +3,7 @@ import { getRedisClient } from '../../config/redis';
 import { logger } from '../../config/logger';
 import { AnomalyDetectionService } from './anomaly-detection.service';
 import { SecurityUtil } from '../../utils/security.util';
+import { deviceRepository } from '../devices/device.repository';
 
 export class MonitoringService {
   private static instance: MonitoringService;
@@ -21,48 +22,31 @@ export class MonitoringService {
     return MonitoringService.instance;
   }
 
-  // Process monitoring data with validation
   async processMonitoringData(deviceId: string, data: any): Promise<any> {
     const redis = getRedisClient();
 
-    // 1. Validate device exists
-    const device = await prisma.device.findUnique({
-      where: { deviceId },
-    });
-
+    // Validate device exists
+    const device = await deviceRepository.findByDeviceId(deviceId);
     if (!device) {
       throw new Error('Device not found');
     }
 
-    // 2. Validate data consistency
-    if (!this.anomalyDetection.validateDataConsistency(data)) {
-      logger.warn('Inconsistent monitoring data', {
-        deviceId,
-        data,
-      });
-      throw new Error('Invalid monitoring data');
-    }
-
-    // 3. Check for duplicate data
+    // Check for duplicate data
     const isDuplicate = await this.checkDuplicateData(deviceId, data);
     if (isDuplicate) {
-      logger.warn('Duplicate monitoring data', {
-        deviceId,
-        data,
-      });
       throw new Error('Duplicate data detected');
     }
 
-    // 4. Detect anomalies
+    // Detect anomalies
     const anomalyResult = await this.anomalyDetection.detectAnomalies(deviceId, data);
 
-    // 5. Check for device hijacking
+    // Check for device hijacking
     const isHijacked = await this.anomalyDetection.detectDeviceHijacking(deviceId, data);
     if (isHijacked) {
       throw new Error('Device hijacking detected');
     }
 
-    // 6. Store monitoring data
+    // Store monitoring data
     const monitoring = await prisma.deviceMonitoring.create({
       data: {
         deviceId: device.id,
@@ -78,29 +62,22 @@ export class MonitoringService {
       },
     });
 
-    // 7. Update device status
-    await prisma.device.update({
-      where: { id: device.id },
-      data: {
-        status: data.batteryLevel > 0 ? 'online' : 'offline',
-        lastSeen: new Date(),
-        batteryHealth: data.batteryHealth || device.batteryHealth,
-      },
-    });
+    // Update device status
+    await deviceRepository.updateStatus(device.id, data.batteryLevel > 0 ? 'online' : 'offline');
 
-    // 8. Handle anomalies
+    // Handle anomalies
     if (anomalyResult.score < 70) {
       await this.handleAnomalies(device, anomalyResult, data);
     }
 
-    // 9. Cache recent data
+    // Cache recent data
     await redis.setEx(
       `device_monitoring:${deviceId}`,
-      300, // 5 minutes
+      300,
       JSON.stringify(monitoring)
     );
 
-    // 10. Update real-time monitoring
+    // Update real-time monitoring
     await this.updateRealTimeMonitoring(deviceId, monitoring);
 
     logger.info('Monitoring data processed', {
@@ -116,94 +93,8 @@ export class MonitoringService {
     };
   }
 
-  private async checkDuplicateData(deviceId: string, data: any): Promise<boolean> {
-    const redis = getRedisClient();
-    const key = `last_monitoring:${deviceId}`;
-    const lastData = await redis.get(key);
-
-    if (!lastData) {
-      await redis.setEx(key, 60, JSON.stringify(data));
-      return false;
-    }
-
-    const parsed = JSON.parse(lastData);
-    
-    // Check if data is too similar (within 5% tolerance)
-    const tolerance = 0.05;
-    const fields = ['batteryLevel', 'cpuUsage', 'temperature'];
-    
-    let similarCount = 0;
-    for (const field of fields) {
-      if (data[field] !== undefined && parsed[field] !== undefined) {
-        const diff = Math.abs(data[field] - parsed[field]);
-        const avg = (data[field] + parsed[field]) / 2;
-        if (avg > 0 && diff / avg < tolerance) {
-          similarCount++;
-        }
-      }
-    }
-
-    // Update cache
-    await redis.setEx(key, 60, JSON.stringify(data));
-
-    // Consider duplicate if all fields are similar
-    return similarCount === fields.length;
-  }
-
-  private async handleAnomalies(device: any, anomalyResult: any, data: any): Promise<void> {
-    // Create security alert for critical anomalies
-    if (anomalyResult.score < 50) {
-      await prisma.securityAlert.create({
-        data: {
-          deviceId: device.id,
-          level: 'critical',
-          title: 'Critical anomalies detected',
-          description: anomalyResult.anomalies.join(', '),
-        },
-      });
-
-      // Send notification
-      await this.sendCriticalAlert(device, anomalyResult, data);
-    } else if (anomalyResult.score < 70) {
-      await prisma.securityAlert.create({
-        data: {
-          deviceId: device.id,
-          level: 'high',
-          title: 'Multiple anomalies detected',
-          description: anomalyResult.anomalies.join(', '),
-        },
-      });
-    }
-
-    // Log anomalies
-    logger.warn('Monitoring anomalies detected', {
-      deviceId: device.deviceId,
-      deviceName: device.deviceName,
-      score: anomalyResult.score,
-      anomalies: anomalyResult.anomalies,
-      data,
-    });
-  }
-
-  private async sendCriticalAlert(device: any, anomalyResult: any, data: any): Promise<void> {
-    // Send email notification to admin
-    // This would use your email service
-    logger.info('Critical alert sent for device', {
-      deviceId: device.deviceId,
-      deviceName: device.deviceName,
-      anomalies: anomalyResult.anomalies,
-    });
-  }
-
-  private async updateRealTimeMonitoring(deviceId: string, monitoring: any): Promise<void> {
-    const redis = getRedisClient();
-    const key = `realtime_monitoring:${deviceId}`;
-    await redis.setEx(key, 60, JSON.stringify(monitoring));
-  }
-
-  // Get monitoring history with filters
   async getMonitoringHistory(deviceId: string, filters: any): Promise<any> {
-    const { startDate, endDate, limit = 100, offset = 0 } = filters;
+    const { startDate, endDate, limit = 100, offset = 0, type } = filters;
 
     const where: any = { deviceId };
 
@@ -213,6 +104,11 @@ export class MonitoringService {
 
     if (endDate) {
       where.createdAt = { ...where.createdAt, lte: new Date(endDate) };
+    }
+
+    // Filter by type (battery, cpu, memory, etc)
+    if (type) {
+      // Add type filtering logic here
     }
 
     const monitoring = await prisma.deviceMonitoring.findMany({
@@ -235,7 +131,6 @@ export class MonitoringService {
     };
   }
 
-  // Get real-time monitoring data
   async getRealtimeMonitoring(deviceId: string): Promise<any> {
     const redis = getRedisClient();
     const key = `realtime_monitoring:${deviceId}`;
@@ -254,7 +149,6 @@ export class MonitoringService {
     return monitoring;
   }
 
-  // Get monitoring statistics
   async getMonitoringStats(deviceId: string): Promise<any> {
     const stats = await prisma.$transaction([
       prisma.deviceMonitoring.aggregate({
@@ -290,5 +184,145 @@ export class MonitoringService {
       total: stats[0]._count,
       chargingStats: stats[1],
     };
+  }
+
+  async getDeviceHealth(deviceId: string): Promise<any> {
+    const device = await deviceRepository.findByDeviceId(deviceId);
+    if (!device) {
+      throw new Error('Device not found');
+    }
+
+    const monitoring = await prisma.deviceMonitoring.findMany({
+      where: { deviceId: device.id },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+
+    // Calculate health score
+    let healthScore = 100;
+
+    // Check battery health
+    const avgBattery = monitoring.reduce((sum, m) => sum + (m.batteryLevel || 0), 0) / monitoring.length;
+    if (avgBattery < 20) {
+      healthScore -= 30;
+    } else if (avgBattery < 50) {
+      healthScore -= 15;
+    }
+
+    // Check CPU usage
+    const avgCpu = monitoring.reduce((sum, m) => sum + (m.cpuUsage || 0), 0) / monitoring.length;
+    if (avgCpu > 80) {
+      healthScore -= 20;
+    } else if (avgCpu > 60) {
+      healthScore -= 10;
+    }
+
+    // Check temperature
+    const avgTemp = monitoring.reduce((sum, m) => sum + (m.temperature || 0), 0) / monitoring.length;
+    if (avgTemp > 45) {
+      healthScore -= 20;
+    } else if (avgTemp > 35) {
+      healthScore -= 10;
+    }
+
+    return {
+      deviceId: device.deviceId,
+      deviceName: device.deviceName,
+      healthScore: Math.max(0, healthScore),
+      status: device.status,
+      lastSeen: device.lastSeen,
+      averages: {
+        batteryLevel: avgBattery,
+        cpuUsage: avgCpu,
+        temperature: avgTemp,
+      },
+      sampleCount: monitoring.length,
+    };
+  }
+
+  validateDataConsistency(data: any): boolean {
+    // Check for negative values
+    if (data.batteryLevel !== undefined && (data.batteryLevel < 0 || data.batteryLevel > 100)) return false;
+    if (data.cpuUsage !== undefined && (data.cpuUsage < 0 || data.cpuUsage > 100)) return false;
+    if (data.temperature !== undefined && (data.temperature < -50 || data.temperature > 100)) return false;
+    
+    // Check for unrealistic values
+    if (data.storageUsed !== undefined && data.totalStorage !== undefined) {
+      if (data.storageUsed > data.totalStorage) return false;
+    }
+    if (data.ramUsed !== undefined && data.ramTotal !== undefined) {
+      if (data.ramUsed > data.ramTotal) return false;
+    }
+    
+    return true;
+  }
+
+  private async checkDuplicateData(deviceId: string, data: any): Promise<boolean> {
+    const redis = getRedisClient();
+    const key = `last_monitoring:${deviceId}`;
+    const lastData = await redis.get(key);
+
+    if (!lastData) {
+      await redis.setEx(key, 60, JSON.stringify(data));
+      return false;
+    }
+
+    const parsed = JSON.parse(lastData);
+    
+    // Check if data is too similar (within 5% tolerance)
+    const tolerance = 0.05;
+    const fields = ['batteryLevel', 'cpuUsage', 'temperature'];
+    
+    let similarCount = 0;
+    for (const field of fields) {
+      if (data[field] !== undefined && parsed[field] !== undefined) {
+        const diff = Math.abs(data[field] - parsed[field]);
+        const avg = (data[field] + parsed[field]) / 2;
+        if (avg > 0 && diff / avg < tolerance) {
+          similarCount++;
+        }
+      }
+    }
+
+    await redis.setEx(key, 60, JSON.stringify(data));
+
+    return similarCount === fields.length;
+  }
+
+  private async handleAnomalies(device: any, anomalyResult: any, data: any): Promise<void> {
+    // Create security alert for critical anomalies
+    if (anomalyResult.score < 50) {
+      await prisma.securityAlert.create({
+        data: {
+          deviceId: device.id,
+          level: 'critical',
+          title: 'Critical anomalies detected',
+          description: anomalyResult.anomalies.join(', '),
+        },
+      });
+    } else if (anomalyResult.score < 70) {
+      await prisma.securityAlert.create({
+        data: {
+          deviceId: device.id,
+          level: 'high',
+          title: 'Multiple anomalies detected',
+          description: anomalyResult.anomalies.join(', '),
+        },
+      });
+    }
+
+    logger.warn('Monitoring anomalies detected', {
+      deviceId: device.deviceId,
+      deviceName: device.deviceName,
+      score: anomalyResult.score,
+      anomalies: anomalyResult.anomalies,
+      data,
+    });
+  }
+
+  private async updateRealTimeMonitoring(deviceId: string, monitoring: any): Promise<void> {
+    const redis = getRedisClient();
+    const key = `realtime_monitoring:${deviceId}`;
+    await redis.setEx(key, 60, JSON.stringify(monitoring));
   }
 }
