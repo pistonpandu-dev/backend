@@ -20,6 +20,9 @@ const createTransporter = () => {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      tls: {
+        rejectUnauthorized: process.env.NODE_ENV === 'production',
+      },
     });
   }
   return transporter;
@@ -37,8 +40,8 @@ export const sendEmail = async (options: EmailOptions): Promise<void> => {
       text: options.text,
     };
 
-    await transporter.sendMail(mailOptions);
-    logger.info(`Email sent to ${options.to}`);
+    const info = await transporter.sendMail(mailOptions);
+    logger.info(`Email sent to ${options.to}`, { messageId: info.messageId });
   } catch (error) {
     logger.error('Failed to send email:', error);
     throw new Error('Failed to send email');
