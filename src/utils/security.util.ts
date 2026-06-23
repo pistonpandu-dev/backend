@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../config/logger';
 
 export class SecurityUtil {
@@ -8,7 +7,6 @@ export class SecurityUtil {
   private readonly iv: Buffer;
 
   private constructor() {
-    // Generate secure encryption key from environment
     const key = process.env.ENCRYPTION_SECRET || 'default-secret-key-32-chars-long!!!';
     this.encryptionKey = crypto.scryptSync(key, 'salt', 32);
     this.iv = crypto.randomBytes(16);
@@ -21,7 +19,6 @@ export class SecurityUtil {
     return SecurityUtil.instance;
   }
 
-  // Generate secure device fingerprint
   generateDeviceFingerprint(data: any): string {
     const hash = crypto.createHash('sha256');
     const stringData = JSON.stringify({
@@ -36,7 +33,6 @@ export class SecurityUtil {
     return hash.digest('hex');
   }
 
-  // Validate device authenticity
   validateDeviceAuthenticity(deviceData: any, fingerprint: string): boolean {
     const computedFingerprint = this.generateDeviceFingerprint(deviceData);
     return crypto.timingSafeEqual(
@@ -45,7 +41,6 @@ export class SecurityUtil {
     );
   }
 
-  // Encrypt sensitive data
   encrypt(data: string): string {
     const cipher = crypto.createCipheriv('aes-256-cbc', this.encryptionKey, this.iv);
     let encrypted = cipher.update(data, 'utf8', 'hex');
@@ -53,7 +48,6 @@ export class SecurityUtil {
     return `${this.iv.toString('hex')}:${encrypted}`;
   }
 
-  // Decrypt sensitive data
   decrypt(encryptedData: string): string {
     const [ivHex, encrypted] = encryptedData.split(':');
     const iv = Buffer.from(ivHex, 'hex');
@@ -63,12 +57,10 @@ export class SecurityUtil {
     return decrypted;
   }
 
-  // Generate secure API key
   generateSecureAPIKey(): string {
     return `rayan_${crypto.randomBytes(32).toString('hex')}`;
   }
 
-  // Validate request signature
   validateRequestSignature(signature: string, payload: any, secret: string): boolean {
     const expectedSignature = crypto
       .createHmac('sha256', secret)
@@ -80,43 +72,27 @@ export class SecurityUtil {
     );
   }
 
-  // Generate nonce for request validation
   generateNonce(): string {
     return crypto.randomBytes(16).toString('hex');
   }
 
-  // Validate timestamp freshness (prevent replay attacks)
   validateTimestamp(timestamp: number, maxAge: number = 300000): boolean {
     const now = Date.now();
     const diff = Math.abs(now - timestamp);
     return diff <= maxAge;
   }
 
-  // Detect suspicious patterns
   detectSuspiciousPattern(data: any): boolean {
     const suspiciousPatterns = [
-      // Fake data patterns
-      /test/i,
-      /demo/i,
-      /sample/i,
-      /example/i,
-      /fake/i,
-      /dummy/i,
-      /mock/i,
-      /simulate/i,
-      /debug/i,
-      /staging/i,
-      /localhost/i,
-      /127\.0\.0\.1/i,
-      /192\.168/i,
-      /10\.0/i,
+      /test/i, /demo/i, /sample/i, /example/i, /fake/i,
+      /dummy/i, /mock/i, /simulate/i, /debug/i, /staging/i,
+      /localhost/i, /127\.0\.0\.1/i, /192\.168/i, /10\.0/i,
     ];
 
     const stringData = JSON.stringify(data).toLowerCase();
     return suspiciousPatterns.some(pattern => pattern.test(stringData));
   }
 
-  // Validate email domain
   validateEmailDomain(email: string): boolean {
     const disposableDomains = [
       'tempmail.com', '10minutemail.com', 'guerrillamail.com',
@@ -128,9 +104,7 @@ export class SecurityUtil {
     return !disposableDomains.includes(domain);
   }
 
-  // Validate IP address
   validateIPAddress(ip: string): boolean {
-    // Block VPN/Proxy IPs (simplified check)
     const blockedRanges = [
       '10.', '172.16.', '172.17.', '172.18.', '172.19.',
       '172.20.', '172.21.', '172.22.', '172.23.', '172.24.',
