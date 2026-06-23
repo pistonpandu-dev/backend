@@ -1,0 +1,79 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          npm install -g railway
+          railway up --service=backend
+
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          echo "$VPS_SSH_KEY" > key.pem
+          chmod 600 key.pem
+          
+          rsync -avz -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
+            ./dist/ $VPS_USERNAME@$VPS_HOST:/var/www/rayan-backend/dist
+          rsync -avz -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
+            ./package*.json $VPS_USERNAME@$VPS_HOST:/var/www/rayan-backend/
+          rsync -avz -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
+            ./prisma/ $VPS_USERNAME@$VPS_HOST:/var/www/rayan-backend/prisma
+          
+          ssh -i key.pem -o StrictHostKeyChecking=no $VPS_USERNAME@$VPS_HOST << 'ENDSSH'
+            cd /var/www/rayan-backend
+            npm install --production
+            npx prisma migrate deploy
+            pm2 restart rayan-backend || pm2 start npm --name "rayan-backend" -- start
+          ENDSSH
+          
+          rm key.pem
+
+      - name: Deploy with Docker Compose
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          echo "$VPS_SSH_KEY" > key.pem
+          chmod 600 key.pem
+          
+          scp -i key.pem -o StrictHostKeyChecking=no \
+            docker-compose.yml $VPS_USERNAME@$VPS_HOST:/var/www/rayan-backend/
+          scp -i key.pem -o StrictHostKeyChecking=no \
+            -r docker/ $VPS_USERNAME@$VPS_HOST:/var/www/rayan-backend/
+          
+          ssh -i key.pem -o StrictHostKeyChecking=no $VPS_USERNAME@$VPS_HOST << 'ENDSSH'
+            cd /var/www/rayan-backend
+            docker-compose down
+            docker-compose build
+            docker-compose up -d
+          ENDSSH
+          
+          rm key.pem
