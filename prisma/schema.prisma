@@ -1,115 +1,387 @@
-// ... previous schema ...
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  super_admin
+  admin
+  operator
+  viewer
+}
+
+enum DeviceStatus {
+  online
+  offline
+  pending
+  expired
+  deleted
+}
+
+enum EnrollmentStatus {
+  pending
+  approved
+  rejected
+  expired
+}
+
+enum RemoteSessionStatus {
+  pending
+  approved
+  rejected
+  active
+  expired
+  terminated
+}
+
+enum AlertLevel {
+  low
+  medium
+  high
+  critical
+}
+
+model Admin {
+  id                  String   @id @default(uuid())
+  name                String
+  email               String   @unique
+  password            String
+  role                Role     @default(operator)
+  avatar              String?
+  isActive            Boolean  @default(true)
+  lastLogin           DateTime?
+  twoFactorEnabled    Boolean  @default(false)
+  twoFactorSecret     String?
+  lastPasswordChange  DateTime?
+  passwordExpiry      DateTime?
+  loginAttempts       Int      @default(0)
+  lockedUntil         DateTime?
+  securityQuestions   Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  sessions            AdminSession[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  remoteSessions      RemoteSession[]
+  screenSessions      ScreenSession[]
+  securityAlerts      SecurityAlert[]
+
+  @@map("admins")
+}
+
+model AdminSession {
+  id            String   @id @default(uuid())
+  adminId       String
+  admin         Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  deviceName    String
+  ipAddress     String?
+  accessToken   String
+  refreshToken  String
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([adminId, refreshToken])
+  @@map("admin_sessions")
+}
 
 model Device {
-  id                String   @id @default(uuid())
-  deviceId          String   @unique
-  deviceName        String
-  brand             String?
-  model             String?
-  androidVersion    String?
-  sdkVersion        String?
-  serialNumber      String?
-  screenResolution  String?
-  batteryHealth     Int?
-  totalStorage      BigInt?
-  freeStorage       BigInt?
-  ramTotal          BigInt?
-  ramFree           BigInt?
-  cpuInfo           String?
-  networkInfo       String?
-  status            DeviceStatus @default(offline)
-  lastSeen          DateTime?    @default(now())
-  fcmToken          String?
+  id                  String   @id @default(uuid())
+  deviceId            String   @unique
+  deviceName          String
+  brand               String?
+  model               String?
+  androidVersion      String?
+  sdkVersion          String?
+  serialNumber        String?
+  screenResolution    String?
+  batteryHealth       Int?
+  totalStorage        BigInt?
+  freeStorage         BigInt?
+  ramTotal            BigInt?
+  ramFree             BigInt?
+  cpuInfo             String?
+  networkInfo         String?
+  status              DeviceStatus @default(offline)
+  lastSeen            DateTime?    @default(now())
+  fcmToken            String?
   
   // Security fields
-  trustScore        Int?         @default(100)
-  verificationLevel String?      @default("basic") // basic, advanced, verified
-  securityFlags     Json?        // Store security-related flags
-  lastVerification  DateTime?
-  verificationAttempts Int?      @default(0)
-  isCompromised     Boolean      @default(false)
-  compromisedAt     DateTime?
-  deletedAt         DateTime?    // Soft delete
+  trustScore          Int?         @default(100)
+  verificationLevel   String?      @default("basic")
+  securityFlags       Json?
+  lastVerification    DateTime?
+  verificationAttempts Int?        @default(0)
+  isCompromised       Boolean      @default(false)
+  compromisedAt       DateTime?
+  deletedAt           DateTime?
   
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
 
-  enrollments       Enrollment[]
-  monitoring        DeviceMonitoring[]
-  locations         Location[]
-  geofences         Geofence[]
-  applications      Application[]
-  files             File[]
-  notifications     Notification[]
-  securityAlerts    SecurityAlert[]
-  groupMembers      DeviceGroupMember[]
-  tagMembers        DeviceTagMember[]
-  remoteSessions    RemoteSession[]
-  screenSessions    ScreenSession[]
+  enrollments         Enrollment[]
+  monitoring          DeviceMonitoring[]
+  locations           Location[]
+  geofences           Geofence[]
+  applications        Application[]
+  files               File[]
+  notifications       Notification[]
+  securityAlerts      SecurityAlert[]
+  groupMembers        DeviceGroupMember[]
+  tagMembers          DeviceTagMember[]
+  remoteSessions      RemoteSession[]
+  screenSessions      ScreenSession[]
 
   @@map("devices")
 }
 
-model Admin {
+model DeviceGroup {
   id          String   @id @default(uuid())
-  name        String
-  email       String   @unique
-  password    String
-  role        Role     @default(operator)
-  avatar      String?
-  isActive    Boolean  @default(true)
-  lastLogin   DateTime?
-  
-  // Security fields
-  twoFactorEnabled Boolean @default(false)
-  twoFactorSecret  String?
-  lastPasswordChange DateTime?
-  passwordExpiry    DateTime?
-  loginAttempts     Int     @default(0)
-  lockedUntil       DateTime?
-  securityQuestions Json?   // Store security questions
-  
+  name        String   @unique
+  description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  sessions    AdminSession[]
-  auditLogs   AuditLog[]
-  devices     Device[]
-  files       File[]
-  notifications Notification[]
-  remoteSessions RemoteSession[]
-  screenSessions ScreenSession[]
+  members     DeviceGroupMember[]
 
-  @@map("admins")
+  @@map("device_groups")
+}
+
+model DeviceGroupMember {
+  id        String @id @default(uuid())
+  groupId   String
+  group     DeviceGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  deviceId  String
+  device    Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+
+  @@unique([groupId, deviceId])
+  @@map("device_group_members")
+}
+
+model DeviceTag {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     DeviceTagMember[]
+
+  @@map("device_tags")
+}
+
+model DeviceTagMember {
+  id        String @id @default(uuid())
+  tagId     String
+  tag       DeviceTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  deviceId  String
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([tagId, deviceId])
+  @@map("device_tag_members")
+}
+
+model Enrollment {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id])
+  pinCode     String
+  email       String?
+  status      EnrollmentStatus @default(pending)
+  expiredAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("enrollments")
+}
+
+model DeviceMonitoring {
+  id            String   @id @default(uuid())
+  deviceId      String
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  batteryLevel  Int?
+  chargingStatus Boolean?
+  storageUsed   BigInt?
+  ramUsed       BigInt?
+  cpuUsage      Float?
+  temperature   Float?
+  wifiInfo      String?
+  mobileNetwork String?
+  lastActive    DateTime?
+  createdAt     DateTime @default(now())
+
+  @@map("device_monitoring")
+}
+
+model Location {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  latitude    Float
+  longitude   Float
+  accuracy    Float?
+  speed       Float?
+  address     String?
+  createdAt   DateTime @default(now())
+
+  @@map("locations")
+}
+
+model Geofence {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  name        String
+  latitude    Float
+  longitude   Float
+  radius      Float
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  logs        GeofenceLog[]
+
+  @@map("geofences")
+}
+
+model GeofenceLog {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  geofenceId  String
+  geofence    Geofence @relation(fields: [geofenceId], references: [id], onDelete: Cascade)
+  event       String
+  createdAt   DateTime @default(now())
+
+  @@map("geofence_logs")
+}
+
+model Application {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  packageName String
+  appName     String
+  version     String?
+  installedAt DateTime?
+  updatedAt   DateTime @updatedAt
+
+  @@map("applications")
+}
+
+model RemoteSession {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  adminId     String
+  admin       Admin    @relation(fields: [adminId], references: [id])
+  status      RemoteSessionStatus @default(pending)
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("remote_sessions")
+}
+
+model ScreenSession {
+  id            String   @id @default(uuid())
+  deviceId      String
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  adminId       String
+  admin         Admin    @relation(fields: [adminId], references: [id])
+  recordingUrl  String?
+  screenshotUrl String?
+  createdAt     DateTime @default(now())
+
+  @@map("screen_sessions")
+}
+
+model File {
+  id          String   @id @default(uuid())
+  deviceId    String?
+  device      Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  adminId     String?
+  admin       Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  fileName    String
+  fileSize    BigInt
+  fileType    String
+  path        String
+  mimeType    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("files")
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  title       String
+  message     String
+  type        String
+  adminId     String?
+  admin       Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  deviceId    String?
+  device      Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  isRead      Boolean  @default(false)
+  readAt      DateTime?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@map("notifications")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  adminId     String
+  admin       Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  action      String
+  module      String
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([adminId])
+  @@index([createdAt])
+  @@map("audit_logs")
 }
 
 model SecurityAlert {
   id          String   @id @default(uuid())
   deviceId    String?
-  device      Device?  @relation(fields: [deviceId], references: [id])
+  device      Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
   adminId     String?
-  admin       Admin?   @relation(fields: [adminId], references: [id])
+  admin       Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
   level       AlertLevel @default(medium)
   title       String
   description String
-  source      String?  // monitoring, security, system
-  
-  // Additional fields
+  source      String?
   resolved    Boolean  @default(false)
   resolvedAt  DateTime?
   resolvedBy  String?
   actionTaken String?
   metadata    Json?
-  
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([deviceId])
+  @@index([createdAt])
   @@map("security_alerts")
 }
 
 model Blacklist {
   id          String   @id @default(uuid())
-  type        String   // ip, device, email, domain
+  type        String
   value       String
   reason      String?
   expiresAt   DateTime?
@@ -123,7 +395,7 @@ model Blacklist {
 
 model Whitelist {
   id          String   @id @default(uuid())
-  type        String   // ip, device, email, domain
+  type        String
   value       String
   reason      String?
   createdBy   String?
