@@ -1,29 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-
-const rolePermissions = {
-  super_admin: ['*'],
-  admin: [
-    'device.read', 'device.write', 'device.delete',
-    'location.read', 'location.write',
-    'session.read', 'session.write',
-    'file.read', 'file.write',
-    'dashboard.read',
-    'security.read',
-    'audit.read',
-  ],
-  operator: [
-    'device.read', 'device.write',
-    'location.read',
-    'session.read',
-    'file.read',
-    'dashboard.read',
-  ],
-  viewer: [
-    'device.read',
-    'location.read',
-    'dashboard.read',
-  ],
-};
+import { ROLES, PERMISSIONS } from '../constants/permissions';
 
 export const checkPermission = (permission: string) => {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -32,16 +8,22 @@ export const checkPermission = (permission: string) => {
     if (!userRole) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized',
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Unauthorized',
+        },
       });
     }
 
-    const permissions = rolePermissions[userRole as keyof typeof rolePermissions];
+    const rolePermissions = PERMISSIONS[userRole as keyof typeof PERMISSIONS];
 
-    if (!permissions || (!permissions.includes('*') && !permissions.includes(permission))) {
+    if (!rolePermissions || (!rolePermissions.includes('*') && !rolePermissions.includes(permission))) {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Insufficient permissions',
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Insufficient permissions',
+        },
       });
     }
 
@@ -56,14 +38,20 @@ export const requireRole = (...roles: string[]) => {
     if (!userRole) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized',
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Unauthorized',
+        },
       });
     }
 
     if (!roles.includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Required role not found',
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Required role not found',
+        },
       });
     }
 
