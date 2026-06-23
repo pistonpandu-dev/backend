@@ -19,18 +19,15 @@ const startServer = async () => {
   }
 };
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
   process.exit(1);
 });
 
-// Handle unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('Received SIGTERM. Performing graceful shutdown...');
   await app.shutdown();
