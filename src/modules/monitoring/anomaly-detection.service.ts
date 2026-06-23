@@ -66,24 +66,13 @@ export class AnomalyDetectionService {
       const avgStorage = historicalData.reduce((sum, d) => sum + (d.storageUsed || 0), 0) / historicalData.length;
       const currentStorage = monitoringData.storageUsed || 0;
       
-      if (Math.abs(currentStorage - avgStorage) > 5 * 1024 * 1024 * 1024) { // 5GB difference
+      if (Math.abs(Number(currentStorage) - Number(avgStorage)) > 5 * 1024 * 1024 * 1024) {
         anomalies.push('Storage usage anomaly detected');
         score -= 15;
       }
     }
 
-    // 4. RAM usage anomaly detection
-    if (historicalData.length > 0) {
-      const avgRam = historicalData.reduce((sum, d) => sum + (d.ramUsed || 0), 0) / historicalData.length;
-      const currentRam = monitoringData.ramUsed || 0;
-      
-      if (Math.abs(currentRam - avgRam) > 2 * 1024 * 1024 * 1024) { // 2GB difference
-        anomalies.push('RAM usage anomaly detected');
-        score -= 10;
-      }
-    }
-
-    // 5. Temperature anomaly detection
+    // 4. Temperature anomaly detection
     if (historicalData.length > 0) {
       const avgTemp = historicalData.reduce((sum, d) => sum + (d.temperature || 0), 0) / historicalData.length;
       const currentTemp = monitoringData.temperature || 0;
@@ -94,7 +83,7 @@ export class AnomalyDetectionService {
       }
     }
 
-    // 6. Check for impossible values
+    // 5. Check for impossible values
     if (monitoringData.batteryLevel > 100 || monitoringData.batteryLevel < 0) {
       anomalies.push('Invalid battery level');
       score -= 30;
@@ -105,29 +94,14 @@ export class AnomalyDetectionService {
       score -= 30;
     }
 
-    // 7. Check for data consistency
-    if (historicalData.length > 0) {
-      const lastData = historicalData[0];
-      const timeDiff = new Date().getTime() - new Date(lastData.createdAt).getTime();
-      
-      if (timeDiff < 60000) { // Less than 1 minute
-        // Check for duplicate data (possible simulation)
-        const isDuplicate = this.isDataDuplicate(lastData, monitoringData);
-        if (isDuplicate) {
-          anomalies.push('Duplicate monitoring data detected');
-          score -= 25;
-        }
-      }
-    }
-
-    // 8. Check data submission frequency
+    // 6. Check data submission frequency
     const submissionKey = `submission:${deviceId}`;
     const submissionCount = await redis.incr(submissionKey);
     if (submissionCount === 1) {
       await redis.expire(submissionKey, 60);
     }
     
-    if (submissionCount > 30) { // More than 30 submissions per minute
+    if (submissionCount > 30) {
       anomalies.push('Excessive data submission');
       score -= 20;
     }
@@ -140,49 +114,11 @@ export class AnomalyDetectionService {
         anomalies,
         data: monitoringData,
       });
-
-      // Create security alert
-      await prisma.securityAlert.create({
-        data: {
-          deviceId,
-          level: score < 50 ? 'high' : 'medium',
-          title: 'Device monitoring anomaly detected',
-          description: anomalies.join(', '),
-        },
-      });
     }
 
     return { anomalies, score };
   }
 
-  private isDataDuplicate(data1: any, data2: any): boolean {
-    const fields = ['batteryLevel', 'cpuUsage', 'temperature', 'storageUsed', 'ramUsed'];
-    
-    let matchCount = 0;
-    for (const field of fields) {
-      if (data1[field] === data2[field]) {
-        matchCount++;
-      }
-    }
-    
-    return matchCount >= 3; // At least 3 fields match
-  }
-
-  // Validate monitoring data consistency
-  validateDataConsistency(data: any): boolean {
-    // Check for negative values
-    if (data.batteryLevel < 0 || data.batteryLevel > 100) return false;
-    if (data.cpuUsage < 0 || data.cpuUsage > 100) return false;
-    if (data.temperature < -50 || data.temperature > 100) return false;
-    
-    // Check for unrealistic values
-    if (data.storageUsed && data.totalStorage && data.storageUsed > data.totalStorage) return false;
-    if (data.ramUsed && data.ramTotal && data.ramUsed > data.ramTotal) return false;
-    
-    return true;
-  }
-
-  // Detect device hijacking attempts
   async detectDeviceHijacking(deviceId: string, newData: any): Promise<boolean> {
     const redis = getRedisClient();
     const deviceFingerprint = await redis.get(`device_fingerprint:${deviceId}`);
@@ -211,6 +147,16 @@ export class AnomalyDetectionService {
     }
     
     return false;
+  }
+
+  async getAnomalies(deviceId: string): Promise<any> {
+    return await prisma.securityAlert.findMany({
+      where: {
+        deviceId,
+        resolved: false,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   private generateFingerprint(data: any): string {
