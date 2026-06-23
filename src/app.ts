@@ -160,23 +160,18 @@ export class App {
 
   async initialize(): Promise<void> {
     try {
-      // Connect to database
       await this.prisma.$connect();
       logger.info('✅ Database connected successfully');
 
-      // Connect to Redis
       await connectRedis();
       logger.info('✅ Redis connected successfully');
 
-      // Initialize Firebase
       initFirebase();
       logger.info('✅ Firebase initialized successfully');
 
-      // Initialize background jobs
       await initializeJobs();
       logger.info('✅ Background jobs initialized successfully');
 
-      // Set up cleanup intervals
       this.setupCleanupIntervals();
 
       logger.info('🚀 Application initialized successfully');
@@ -187,7 +182,6 @@ export class App {
   }
 
   private setupCleanupIntervals(): void {
-    // Cleanup expired sessions every hour
     setInterval(async () => {
       try {
         const result = await this.prisma.adminSession.deleteMany({
@@ -203,7 +197,6 @@ export class App {
       }
     }, 60 * 60 * 1000);
 
-    // Cleanup old logs every day
     setInterval(async () => {
       try {
         const retentionDays = parseInt(process.env.LOG_RETENTION_DAYS || '30');
@@ -230,21 +223,17 @@ export class App {
     logger.info('🛑 Shutting down gracefully...');
 
     try {
-      // Close HTTP server
       await new Promise((resolve) => {
         this.server.close(resolve);
       });
       logger.info('✅ HTTP server closed');
 
-      // Close Socket.IO
       await this.io.close();
       logger.info('✅ Socket.IO closed');
 
-      // Disconnect database
       await this.prisma.$disconnect();
       logger.info('✅ Database disconnected');
 
-      // Disconnect Redis
       const redis = getRedisClient();
       await redis.quit();
       logger.info('✅ Redis disconnected');
@@ -270,4 +259,4 @@ export class App {
   getPrisma(): PrismaClient {
     return this.prisma;
   }
-          }
+}
